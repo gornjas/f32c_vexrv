@@ -110,6 +110,7 @@ begin
     generic map (
 	C_clk_freq_hz => C_clk_freq_hz,
 	C_spi => 3,
+	C_simple_in => 20,
 	C_bootloader_filename => "../../../../../soc/boot/riscv_spi.srec"
     )
     port map (
@@ -180,11 +181,11 @@ begin
     I_pll: entity work.pll_25m
     port map (
 	clk_25m => clk_25m,
-	clk_90m => clk,
 	clk_74m25 => pixclk,
 	clk_371m25 => pixclk_x5,
 	lock => pll_lock
     );
+    clk <= pixclk;
 
     reset <= sio_break or not pll_lock;
 end x;

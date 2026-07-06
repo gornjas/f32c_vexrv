@@ -115,6 +115,14 @@ architecture x of glue_vexriscv_sdram_dv is
     signal sio_ce: std_logic_vector(C_sio - 1 downto 0) := (others => '0');
     signal sio_tx, sio_rx: std_logic_vector(C_sio - 1 downto 0);
 
+    -- Digital video framebuffer: 0x3C0 .. 0x3CF
+    constant C_fb_sdram_port: natural := 1;
+    constant C_io_fb_vmode: std_logic_vector(7 downto 0) := x"3C";
+    constant C_io_fb_cfg: std_logic_vector(7 downto 0) := x"3D";
+    signal fb_io_range: boolean;
+    signal fb_ce: std_logic;
+    signal from_fb: std_logic_vector(31 downto 0);
+
     -- RTC: 0x780 .. 0x78F
     constant C_io_rtc: std_logic_vector(7 downto 0) := x"78";
     signal rtc_io_range: boolean;
@@ -293,11 +301,39 @@ begin
     end generate;
 
     --
+    -- Video framebuffer
+    --
+    I_fb: entity work.dvi_fb
+    port map (
+	clk => clk,
+	ce => fb_ce,
+	-- I/O slave
+	bus_write => io_write,
+	byte_sel => io_byte_sel,
+	bus_addr => io_addr(5 downto 2),
+	bus_in => cpu_to_io,
+	bus_out => from_fb,
+	-- DMA master
+	dma_req => sdram_req(C_fb_sdram_port),
+	dma_resp => sdram_resp(C_fb_sdram_port),
+	-- Video
+	pixclk => pixclk,
+	pixclk_x5 => pixclk_x5,
+	dv_clk => dv_crgb(7 downto 6),
+	dv_r => dv_crgb(5 downto 4),
+	dv_g => dv_crgb(3 downto 2),
+	dv_b => dv_crgb(1 downto 0)
+    );
+    fb_ce <= io_strobe when fb_io_range else '0';
+    fb_io_range <= io_addr(11 downto 4) = C_io_fb_vmode or
+      io_addr(11 downto 4) = C_io_fb_cfg;
+
+    --
     -- SDRAM
     --
     sdram: entity work.sdram_controller
     generic map (
-	C_ports => 1,
+	C_ports => 2,
 	C_ras => C_ras, C_cas => C_cas, C_pre => C_pre,
 	C_clock_range => C_clock_range,
 	C_address_width => C_sdram_address_width,
@@ -357,7 +393,7 @@ begin
 	    end if;
 	end if;
     end process;
-    simple_out <= R_simple_out;
+    simple_out <= R_simple_out(C_simple_out - 1 downto 0);
 
     --
     -- SPI
@@ -452,6 +488,8 @@ begin
 	    end loop;
 	when C_io_rtc =>
 	    io_to_cpu <= from_rtc;
+	when C_io_fb_vmode | C_io_fb_cfg =>
+	    io_to_cpu <= from_fb;
 	when others  =>
 	    io_to_cpu <= (others => '0');
 	end case;
