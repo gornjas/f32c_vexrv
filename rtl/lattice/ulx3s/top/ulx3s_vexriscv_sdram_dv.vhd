@@ -6,10 +6,9 @@ library ecp5u;
 use ecp5u.components.all;
 
 
-entity ulx3s_vexriscv_sdram is
+entity ulx3s_vexriscv_sdram_dv is
     generic (
-	C_clk_freq_hz: natural := 74250000;
-	C_spi: natural := 2
+	C_clk_freq_hz: natural := 74250000
     );
     port (
 	clk_25m: in std_logic;
@@ -28,10 +27,30 @@ entity ulx3s_vexriscv_sdram is
 
 	-- On-board simple IO
 	led: out std_logic_vector(7 downto 0);
+	btn_pwr, btn_f1, btn_f2: in std_logic;
+	btn_up, btn_down, btn_left, btn_right: in std_logic;
+	sw: in std_logic_vector(3 downto 0);
+
+	-- GPIO
+	gp: inout std_logic_vector(27 downto 0);
+	gn: inout std_logic_vector(27 downto 0);
+
+	-- Audio jack 3.5mm
+	p_tip: inout std_logic_vector(3 downto 0);
+	p_ring: inout std_logic_vector(3 downto 0);
+	p_ring2: inout std_logic_vector(3 downto 0);
 
 	-- SIO0 (FTDI)
 	rs232_tx: out std_logic;
 	rs232_rx: in std_logic;
+	rs232_rts: in std_logic;
+	rs232_dtr: in std_logic;
+
+	-- Digital Video (differential outputs)
+	gpdi_dp: out std_logic_vector(3 downto 0);
+
+	-- i2c shared for digital video and RTC
+	gpdi_scl, gpdi_sda: inout std_logic;
 
 	-- SPI flash (SPI #0)
 	flash_so: inout std_logic;
@@ -47,29 +66,55 @@ entity ulx3s_vexriscv_sdram is
 	sd_cdn: in std_logic;
 	sd_wp: in std_logic;
 
+	-- ADC MAX11123 (SPI #2)
+	adc_csn: out std_logic;
+	adc_sclk: out std_logic;
+	adc_mosi: inout std_logic;
+	adc_miso: inout std_logic;
+
+	-- ESP32
+	esp32_rxd: out std_logic;
+	esp32_txd: in std_logic;
+	esp32_en: inout std_logic := 'Z';
+	esp32_gpio0: inout std_logic := 'Z';
+	esp32_gpio19: inout std_logic := 'Z';
+	esp32_gpio21: inout std_logic := 'Z';
+	esp32_gpio22: inout std_logic := 'Z';
+	esp32_gpio25: inout std_logic := 'Z';
+	esp32_gpio26: inout std_logic := 'Z';
+	esp32_gpio27: inout std_logic := 'Z';
+	esp32_gpio35: inout std_logic := 'Z';
+
+	-- PCB antenna
+	ant: out std_logic;
+
 	-- '1' = power off
 	shutdown: out std_logic := '0'
     );
-end ulx3s_vexriscv_sdram;
+end ulx3s_vexriscv_sdram_dv;
 
-architecture x of ulx3s_vexriscv_sdram is
+architecture x of ulx3s_vexriscv_sdram_dv is
     signal clk, pll_lock: std_logic;
-    signal cpu_reset: std_logic;
+    signal pixclk, pixclk_x5: std_logic;
+    signal reset: std_logic;
     signal sio_break: std_logic;
     signal flash_sck: std_logic;
     signal flash_csn: std_logic;
+    signal dv_crgb: std_logic_vector(7 downto 0);
+
+    signal R_simple_in: std_logic_vector(19 downto 0);
 
 begin
     -- VexRiscV SoC
-    I_top: entity work.glue_vexriscv_sdram
+    I_top: entity work.glue_vexriscv_sdram_dv
     generic map (
 	C_clk_freq_hz => C_clk_freq_hz,
-	C_spi => C_spi,
+	C_spi => 3,
 	C_bootloader_filename => "../../../../../soc/boot/riscv_spi.srec"
     )
     port map (
 	clk => clk,
-	reset => cpu_reset,
+	reset => reset,
 
 	sdram_clk => open,
 	sdram_cke => sdram_cke,
@@ -82,21 +127,33 @@ begin
 	sdram_addr => sdram_a,
 	sdram_data => sdram_d,
 
-	spi_ss0(0) => flash_csn,
-	spi_ss0(1) => sd_d(3),
-	spi_sck(0) => flash_sck,
-	spi_sck(1) => sd_clk,
-	spi_mosi(0) => flash_si,
-	spi_mosi(1) => sd_cmd,
-	spi_miso(0) => flash_so,
-	spi_miso(1) => sd_d(0),
-
 	sio_rxd(0) => rs232_rx,
 	sio_txd(0) => rs232_tx,
 	sio_break(0) => sio_break,
 
-	simple_out(7 downto 0) => led
+	simple_in => R_simple_in,
+	simple_out(7 downto 0) => led,
+
+	spi_ss0(0) => flash_csn,
+	spi_ss0(1) => sd_d(3),
+	spi_ss0(2) => adc_csn,
+	spi_sck(0) => flash_sck,
+	spi_sck(1) => sd_clk,
+	spi_sck(2) => adc_sclk,
+	spi_mosi(0) => flash_si,
+	spi_mosi(1) => sd_cmd,
+	spi_mosi(2) => adc_mosi,
+	spi_miso(0) => flash_so,
+	spi_miso(1) => sd_d(0),
+	spi_miso(2) => adc_miso,
+
+	pixclk => pixclk,
+	pixclk_x5 => pixclk_x5,
+	dv_crgb => dv_crgb
     );
+
+    R_simple_in <= sw & x"00" & '0' & not btn_pwr & btn_f2 & btn_f1
+      & btn_up & btn_down & btn_left & btn_right when rising_edge(clk);
 
     -- Route SDRAM clock through a DDR register for precise signal timings
     I_sdram_clk: ODDRX1F
@@ -110,12 +167,24 @@ begin
     );
     flash_cen <= flash_csn;
 
+    G_oddr: for i in 0 to 3 generate
+    I_oddr: oddrx1f port map (
+	sclk => pixclk_x5,
+	rst => '0',
+	d0 => dv_crgb(2 * i),
+	d1 => dv_crgb(2 * i + 1),
+	q => gpdi_dp(i)
+    );
+    end generate;
+
     I_pll: entity work.pll_25m
     port map (
 	clk_25m => clk_25m,
-	clk_74m25 => clk,
+	clk_90m => clk,
+	clk_74m25 => pixclk,
+	clk_371m25 => pixclk_x5,
 	lock => pll_lock
     );
 
-    cpu_reset <= sio_break or not pll_lock;
+    reset <= sio_break or not pll_lock;
 end x;
